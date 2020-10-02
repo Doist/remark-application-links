@@ -28,7 +28,7 @@
         }
     },
     "prettier": "@doist/prettier-config",
-    "name": "remark-application-links",
+    "name": "@doist/remark-application-links",
     "author": "Henning Muszynski",
     "module": "dist/remark-application-links.esm.js",
     "devDependencies": {
