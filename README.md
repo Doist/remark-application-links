@@ -83,6 +83,12 @@ This plugin can be used in combination with [react-markdown](https://github.com/
 
 We're maintaining a [changelog](./CHANGELOG.md) in this repository. Our versioning follows [semantic versioning](https://semver.org/).
 
+## Releasing
+
+A new version of remark-application-links is published both on npm and GitHub Package Registry whenever a new release on GitHub is created. A GitHub Action will automatically perform all the necessary steps.
+
+The Action will release the version number that's specified inside the `package.json`'s `version` field so make sure that it reflects the version you want to publish. Additionally, the Action can be triggered manually in case something went wrong in the automation.
+
 ## Contributing
 
 Contributions are welcome. Check our [contributing guide](./CONTRIBUTING.md).
