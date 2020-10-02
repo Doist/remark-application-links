@@ -1,0 +1,8 @@
+# Directories
+.github/
+.vscode/
+coverage/
+
+# Files
+CONTRIBUTING.md
+tsconfig.json
