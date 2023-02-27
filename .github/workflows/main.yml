@@ -33,8 +33,3 @@ jobs:
 
             - name: Build
               run: npm run build
-
-            - name: Upload to coveralls
-              uses: coverallsapp/github-action@v1.1.2
-              with:
-                  github-token: ${{ secrets.GITHUB_TOKEN }}
