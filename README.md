@@ -25,8 +25,6 @@ Heavily inspired by [remark-linkify-regex](https://gitlab.com/staltz/remark-link
 
 Bootstrapped and built with [tsdx](https://github.com/formium/tsdx).
 
-[![Coverage Status](https://coveralls.io/repos/github/Doist/remark-application-links/badge.svg?branch=main)](https://coveralls.io/github/Doist/remark-application-links?branch=main)
-
 ## Installation
 
 Use [npm](https://www.npmjs.com/get-npm) or [yarn](https://yarnpkg.com/lang/en/docs/install/) to install:
