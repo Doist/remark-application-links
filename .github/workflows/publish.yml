@@ -45,7 +45,7 @@ jobs:
                   node-version: 24
                   registry-url: https://npm.pkg.github.com/
                   scope: '@doist'
-            - run: npm publish --provenance
+            - run: npm publish --provenance --access public
 
             - name: Publish to npm registry
               uses: actions/setup-node@v3
@@ -53,4 +53,4 @@ jobs:
                   node-version: 24
                   registry-url: https://registry.npmjs.org/
                   scope: '@doist'
-            - run: npm publish --provenance
+            - run: npm publish --provenance --access public
