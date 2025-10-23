@@ -41,19 +41,18 @@ jobs:
             - name: Build
               run: npm run build
 
-            # Temporarily disabled GitHub Package Registry publishing
-            # - name: Publish to GitHub Package Registry
-            #   uses: actions/setup-node@v3
-            #   with:
-            #       node-version: 24
-            #       registry-url: https://npm.pkg.github.com/
-            #       scope: '@doist'
-            # - run: npm publish
-            #   env:
-            #       NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            - name: Publish to GitHub Package Registry
+              uses: actions/setup-node@v3
+              with:
+                  node-version: 24
+                  registry-url: https://npm.pkg.github.com/
+                  scope: '@doist'
+            - run: npm publish
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-            # - name: Clear npm config between GitHub/npm registries
-            #   run: rm -f $NPM_CONFIG_USERCONFIG
+            - name: Clear npm config between GitHub/npm registries
+              run: rm -f $NPM_CONFIG_USERCONFIG
 
             - name: Publish to npm registry
               uses: actions/setup-node@v3
