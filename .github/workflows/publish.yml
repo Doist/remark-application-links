@@ -45,7 +45,9 @@ jobs:
                   node-version: 24
                   registry-url: https://npm.pkg.github.com/
                   scope: '@doist'
-            - run: npm publish --provenance --access public
+            - run: npm publish
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Publish to npm registry
               uses: actions/setup-node@v3
