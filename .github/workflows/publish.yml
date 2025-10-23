@@ -49,6 +49,9 @@ jobs:
               env:
                   NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+            - name: Clear npm config between GitHub/npm registries
+              run: rm -f $NPM_CONFIG_USERCONFIG
+
             - name: Publish to npm registry
               uses: actions/setup-node@v3
               with:
