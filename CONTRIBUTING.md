@@ -15,7 +15,7 @@ series [How to Contribute to an Open Source Project on GitHub][egghead]
 > requests from branches on your fork. To do this, run:
 >
 > ```
-> git remote add upstream https://github.com/doist/remark-application-links.git
+> git remote add upstream https://github.com/todoist/remark-application-links.git
 > git fetch upstream
 > git branch --set-upstream-to=upstream/dev dev
 > ```
@@ -43,4 +43,4 @@ Also, please watch the repo and respond to questions/bug reports/feature
 requests! Thanks!
 
 [egghead]: https://egghead.io/series/how-to-contribute-to-an-open-source-project-on-github
-[issues]: https://github.com/doist/remark-application-links/issues
+[issues]: https://github.com/todoist/remark-application-links/issues

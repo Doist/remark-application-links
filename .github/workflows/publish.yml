@@ -1,63 +1,106 @@
 name: Release package
+run-name: remark-application-links ${{ inputs.operation }} ${{ github.sha }}
 
 on:
-    release:
-        types: [created]
     workflow_dispatch:
+        inputs:
+            operation:
+                description: Pack only, or publish an existing retained artifact
+                type: choice
+                options: [pack, publish]
+                default: pack
+                required: true
+            artifact_run_id:
+                description: Successful pack run ID (publish only)
+                type: string
+            release_sha:
+                description: Full source commit from that pack run (publish only)
+                type: string
+            version:
+                description: Exact retained artifact version (publish only)
+                type: string
+            destination:
+                description: Publish only this missing registry copy
+                type: choice
+                options: [github, npmjs]
+                default: github
+            release_tag:
+                description: Use migration-recovery for an older missing mirror
+                type: choice
+                options: [latest, migration-recovery]
+                default: latest
 
 permissions:
-    # Enable the use of OIDC for trusted publishing and npm provenance
-    id-token: write
-    # Enable the use of GitHub Packages registry
-    packages: write
+    contents: read
+
+concurrency:
+    group: remark-application-links-release
+    cancel-in-progress: false
 
 jobs:
-    publish:
+    pack:
+        if: inputs.operation == 'pack' && github.repository == 'todoist/remark-application-links' && github.ref == 'refs/heads/main'
         runs-on: ubuntu-latest
-        timeout-minutes: 60
+        timeout-minutes: 20
         steps:
-            - name: Checkout
-              uses: actions/checkout@v4
-
-            - name: Setup Node
-              uses: actions/setup-node@v3
+            - uses: actions/checkout@v4
               with:
-                  node-version: 24
-
-            - name: Ensure npm 11.5.1 or later is installed
-              run: npm install -g npm@latest
-
-            - name: Install dependencies
-              run: npm ci
-
-            - name: Lint
-              run: npm run lint
+                  ref: ${{ github.sha }}
+                  persist-credentials: false
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24.20.0
+            - run: npm ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps
+            - run: npm run test:release
+            - run: npm run lint
               env:
                   CI: true
-
-            - name: Test
-              run: npm run test:ci
-
-            - name: Build
-              run: npm run build
-
-            - name: Publish to GitHub Package Registry
-              uses: actions/setup-node@v3
+            - run: npm run test:ci
+            - run: npm run build
+            - run: node scripts/release.mjs pack release-artifact
+            - uses: actions/upload-artifact@v4
               with:
-                  node-version: 24
-                  registry-url: https://npm.pkg.github.com/
-                  scope: '@doist'
-            - run: npm publish
+                  name: remark-application-links-release
+                  path: release-artifact/
+                  if-no-files-found: error
+                  retention-days: 90
+
+    publish:
+        if: inputs.operation == 'publish' && github.repository == 'todoist/remark-application-links' && github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        environment: npm-release
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            actions: read
+            packages: write
+            id-token: write
+        env:
+            ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+            RELEASE_SHA: ${{ inputs.release_sha }}
+            RELEASE_VERSION: ${{ inputs.version }}
+            RELEASE_TAG: ${{ inputs.release_tag }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.sha }}
+                  persist-credentials: false
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24.20.0
+            - name: Validate historical source run before downloading
+              run: node scripts/validate-source-run.mjs
               env:
-                  NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-            - name: Clear npm config between GitHub/npm registries
-              run: rm -f $NPM_CONFIG_USERCONFIG
-
-            - name: Publish to npm registry
-              uses: actions/setup-node@v3
+                  GH_TOKEN: ${{ github.token }}
+            - uses: actions/download-artifact@v4
               with:
-                  node-version: 24
-                  registry-url: https://registry.npmjs.org/
-                  scope: '@doist'
-            - run: npm publish --provenance --access public
+                  name: remark-application-links-release
+                  path: release-artifact
+                  github-token: ${{ github.token }}
+                  run-id: ${{ inputs.artifact_run_id }}
+            - name: Publish retained bytes after both-registry preflight
+              run: node scripts/release.mjs publish release-artifact "$DESTINATION"
+              env:
+                  DESTINATION: ${{ inputs.destination }}
+                  GH_TOKEN: ${{ github.token }}
+                  GH_PACKAGES_TOKEN: ${{ github.token }}

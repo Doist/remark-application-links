@@ -30,9 +30,9 @@ Bootstrapped and built with [tsdx](https://github.com/formium/tsdx).
 Use [npm](https://www.npmjs.com/get-npm) or [yarn](https://yarnpkg.com/lang/en/docs/install/) to install:
 
 ```sh
-npm install @doist/remark-application-links
+npm install @todoist/remark-application-links
 # or
-yarn add @doist/remark-application-links
+yarn add @todoist/remark-application-links
 ```
 
 ## Usage
@@ -83,9 +83,11 @@ We're maintaining a [changelog](./CHANGELOG.md) in this repository. Our versioni
 
 ## Releasing
 
-A new version of remark-application-links is published both on npm and GitHub Package Registry whenever a new release on GitHub is created. A GitHub Action will automatically perform all the necessary steps.
+Versions follow the explicit `package.json` semver value and `vVERSION` release record. The first new-scope release is `@todoist/remark-application-links@1.0.5`; previous packages and releases remain unchanged.
 
-The Action will release the version number that's specified inside the `package.json`'s `version` field so make sure that it reflects the version you want to publish. Additionally, the Action can be triggered manually in case something went wrong in the automation.
+The manual [release workflow](./.github/workflows/publish.yml) first builds and retains a checked tarball without publishing. An authorized maintainer then publishes that same artifact to npm and GitHub Packages. Mirror retries reuse the original artifact and version. Creating a GitHub release no longer rebuilds or publishes packages.
+
+See [the release runbook](./RELEASING.md) for the required upstream publication, first interactive npm publication, workflow setup, and recovery commands.
 
 ## Contributing
 
