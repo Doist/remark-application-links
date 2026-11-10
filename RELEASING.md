@@ -172,6 +172,34 @@ maintainer then completes the normal `v1.0.5` GitHub release record against the
 that record no longer triggers publication. Future versions use an explicit
 reviewed semver manifest/lock bump; do not rebuild old release lines.
 
+### Confirm the release record, including interrupted drafts
+
+The release record must retain the **original tarball and release.json**. A tag
+name in `gh release list` is not completion: the command includes drafts. Before
+calling the release complete, fetch the existing tag without force, peel it to a
+commit and compare it with `RELEASE_SHA`; inspect the release state and assets:
+
+```sh
+git fetch origin "refs/tags/v${RELEASE_VERSION}:refs/tags/v${RELEASE_VERSION}"
+test "$(git rev-parse "v${RELEASE_VERSION}^{commit}")" = "$RELEASE_SHA"
+gh release view "v${RELEASE_VERSION}" --repo todoist/remark-application-links \
+  --json tagName,isDraft,isPrerelease,publishedAt,assets,url
+record_dir="$(mktemp -d)"
+gh release download "v${RELEASE_VERSION}" --repo todoist/remark-application-links \
+  --dir "$record_dir" --pattern "todoist-remark-application-links-${RELEASE_VERSION}.tgz" --pattern release.json
+cmp "release-artifact/todoist-remark-application-links-${RELEASE_VERSION}.tgz" "$record_dir/todoist-remark-application-links-${RELEASE_VERSION}.tgz"
+cmp release-artifact/release.json "$record_dir/release.json"
+```
+
+Completion requires the exact source tag commit, `isDraft=false`,
+`isPrerelease=false`, a non-null `publishedAt`, matching retained assets, and both
+registry copies. If an interrupted operation left a matching draft, the maintainer
+resumes that existing draft: upload only missing original assets, verify them,
+then explicitly publish it. Stop on a wrong tag commit, conflicting assets, or
+unexpected prerelease state for owner review. Do not force-move, delete, or recreate
+a tag/release, and do not repack the immutable version. Any agent-authored release
+notes must start with `[Posted by Jarvis]`, a blank line, then the body.
+
 ## Partial publication and durable recovery
 
 Rerun only the missing destination with the **original artifact run, SHA and
