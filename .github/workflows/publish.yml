@@ -13,6 +13,15 @@ on:
             artifact_run_id:
                 description: Successful pack run ID (publish only)
                 type: string
+            artifact_run_attempt:
+                description: Original successful pack attempt number (publish only)
+                type: string
+            artifact_id:
+                description: Immutable uploaded archive artifact ID (publish only)
+                type: string
+            artifact_digest:
+                description: Original archive digest, sha256 followed by colon and 64 hex characters
+                type: string
             release_sha:
                 description: Full source commit from that pack run (publish only)
                 type: string
@@ -59,11 +68,19 @@ jobs:
             - run: npm run build
             - run: node scripts/release.mjs pack release-artifact
             - uses: actions/upload-artifact@v4
+              id: artifact
               with:
-                  name: remark-application-links-release
+                  name: remark-application-links-release-${{ github.run_id }}-${{ github.run_attempt }}
                   path: release-artifact/
                   if-no-files-found: error
                   retention-days: 90
+            - name: Record original archive identity
+              env:
+                  ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
+                  ARCHIVE_SHA256: ${{ steps.artifact.outputs.artifact-digest }}
+              run: |
+                  echo "Run: $GITHUB_RUN_ID; attempt: $GITHUB_RUN_ATTEMPT; artifact: $ARTIFACT_ID; digest: sha256:$ARCHIVE_SHA256" >> "$GITHUB_STEP_SUMMARY"
+                  cat release-artifact/release.json >> "$GITHUB_STEP_SUMMARY"
 
     publish:
         if: inputs.operation == 'publish' && github.repository == 'todoist/remark-application-links' && github.ref == 'refs/heads/main'
@@ -77,6 +94,9 @@ jobs:
             id-token: write
         env:
             ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+            ARTIFACT_RUN_ATTEMPT: ${{ inputs.artifact_run_attempt }}
+            ARTIFACT_ID: ${{ inputs.artifact_id }}
+            ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
             RELEASE_SHA: ${{ inputs.release_sha }}
             RELEASE_VERSION: ${{ inputs.version }}
             RELEASE_TAG: ${{ inputs.release_tag }}
@@ -88,16 +108,10 @@ jobs:
             - uses: actions/setup-node@v4
               with:
                   node-version: 24.20.0
-            - name: Validate historical source run before downloading
-              run: node scripts/validate-source-run.mjs
+            - name: Download exact archive after historical attempt validation
+              run: node scripts/release.mjs download release-artifact
               env:
                   GH_TOKEN: ${{ github.token }}
-            - uses: actions/download-artifact@v4
-              with:
-                  name: remark-application-links-release
-                  path: release-artifact
-                  github-token: ${{ github.token }}
-                  run-id: ${{ inputs.artifact_run_id }}
             - name: Publish retained bytes after both-registry preflight
               run: node scripts/release.mjs publish release-artifact "$DESTINATION"
               env:

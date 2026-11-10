@@ -6,6 +6,8 @@ import { validateSourceRun, validatePublicationTag } from './release-policy.mjs'
 const selected = 'a'.repeat(40)
 const head = 'b'.repeat(40)
 const validRun = {
+    id: 123,
+    run_attempt: 1,
     repository: { full_name: 'todoist/remark-application-links', id: 300606066 },
     head_repository: { full_name: 'todoist/remark-application-links', id: 300606066 },
     workflow_id: 2823705,
@@ -19,7 +21,7 @@ const validRun = {
 }
 const comparison = async (base) => ({ status: 'ahead', merge_base_commit: { sha: base } })
 const validate = (run, compare = comparison) =>
-    validateSourceRun(run, 2823705, selected, '1.0.5', compare)
+    validateSourceRun(run, 2823705, selected, '1.0.5', compare, '123', '1')
 
 test('C03 source run maps to exact main checkout and reviewed ancestry', async () => {
     const calls = []
@@ -116,7 +118,8 @@ function publisherFixture(options = {}) {
         join(dir, 'release.json'),
         JSON.stringify({
             ...manifest,
-            schema: 1,
+            schema: options.schema || 2,
+            sourceRunAttempt: '1',
             sourceRunId: '123',
             filename,
             sourceSha: selected,
@@ -127,6 +130,24 @@ function publisherFixture(options = {}) {
     mkdirSync(join(dir, 'original'))
     for (const file of ['release.json', filename])
         writeFileSync(join(dir, 'original', file), readFileSync(join(dir, file)))
+    execFileSync('zip', ['-q', join(dir, 'artifact.zip'), 'release.json', filename], {
+        cwd: join(dir, 'original'),
+    })
+    const archiveDigest = `sha256:${createHash('sha256')
+        .update(readFileSync(join(dir, 'artifact.zip')))
+        .digest('hex')}`
+    writeFileSync(
+        join(dir, 'artifact.json'),
+        JSON.stringify({
+            schema: 1,
+            sourceRunId: '123',
+            sourceRunAttempt: '1',
+            sourceSha: selected,
+            artifactId: '456',
+            artifactName: 'remark-application-links-release-123-1',
+            archiveDigest,
+        }),
+    )
     const state = join(dir, 'state.json')
     writeFileSync(
         state,
@@ -145,6 +166,8 @@ function publisherFixture(options = {}) {
                 ...options.opposite,
             },
             commands: [],
+            ghRequests: [],
+            archiveDigest,
             integrity,
         }),
     )
@@ -188,16 +211,17 @@ fs.writeFileSync(process.env.MOCK_STATE, JSON.stringify(state))
         `#!${process.execPath}
 const fs = require('node:fs')
 const state = JSON.parse(fs.readFileSync(process.env.MOCK_STATE))
-if (process.argv[2] === 'run' && process.argv[3] === 'download') {
-    const path = require('node:path')
-    const target = process.argv[process.argv.indexOf('--dir') + 1]
-    for (const filename of ['release.json', 'todoist-remark-application-links-1.0.5.tgz'])
-        fs.copyFileSync(path.join(path.dirname(process.env.MOCK_STATE), 'original', filename), path.join(target, filename))
+const path = process.argv[3]
+state.ghRequests.push(path)
+fs.writeFileSync(process.env.MOCK_STATE, JSON.stringify(state))
+let result
+if (path.endsWith('actions/runs/123')) result = {...${JSON.stringify(validRun)}, run_attempt: 2, conclusion: 'failure'}
+else if (path.includes('actions/runs/123/attempts/')) result = {...${JSON.stringify(validRun)}, ...state.runPatch}
+else if (path.endsWith('actions/artifacts/456/zip')) {
+    process.stdout.write(fs.readFileSync(require('node:path').join(require('node:path').dirname(process.env.MOCK_STATE), 'artifact.zip')))
     process.exit(0)
 }
-const path = process.argv[3]
-let result
-if (path.endsWith('actions/runs/123')) result = ${JSON.stringify(validRun)}
+else if (path.includes('actions/artifacts/')) result = {id:456, expired:false, name:'remark-application-links-release-123-1', digest:state.archiveDigest, workflow_run:{id:123,head_sha:'${selected}',head_branch:'main',repository_id:300606066,head_repository_id:300606066}, ...state.artifactPatch}
 else if (path.endsWith('actions/workflows/publish.yml')) result = {id: 2823705}
 else if (path.includes('compare/')) result = {status: 'ahead', merge_base_commit: {sha: '${selected}'}}
 else if (path.includes('contents/.github/workflows/publish.yml')) result = {type:'file',path:'.github/workflows/publish.yml',content:Buffer.from('historical workflow; current main may differ').toString('base64')}
@@ -213,7 +237,12 @@ console.log(JSON.stringify(result))
         run(tag, destination, command = 'publish', extraEnv = {}) {
             return spawnSync(
                 process.execPath,
-                [new URL('./release.mjs', import.meta.url).pathname, command, dir, destination],
+                [
+                    new URL('./release.mjs', import.meta.url).pathname,
+                    command,
+                    command === 'download' ? join(dir, 'download') : dir,
+                    destination,
+                ],
                 {
                     encoding: 'utf8',
                     input: 'mock-otp\n',
@@ -226,6 +255,9 @@ console.log(JSON.stringify(result))
                         GH_TOKEN: 'ambient-mock-only',
                         GITHUB_TOKEN: 'ambient-mock-only',
                         ARTIFACT_RUN_ID: '123',
+                        ARTIFACT_RUN_ATTEMPT: '1',
+                        ARTIFACT_ID: '456',
+                        ARTIFACT_DIGEST: archiveDigest,
                         RELEASE_SHA: selected,
                         RELEASE_VERSION: '1.0.5',
                         RELEASE_TAG: tag,
@@ -470,5 +502,103 @@ test('C03 local bootstrap rejects self-declared metadata not retained by the suc
         assert.deepEqual(fixture.state().publishes, [])
     } finally {
         fixture.close()
+    }
+})
+
+test('original successful attempt downloads and publishes after the latest attempt failed', () => {
+    const fixture = publisherFixture({ tags: {} })
+    try {
+        const downloaded = fixture.run('latest', 'npmjs', 'download')
+        assert.equal(downloaded.status, 0, downloaded.stderr)
+        assert.ok(
+            readFileSync(join(fixture.dir, 'download/artifact.zip')).equals(
+                readFileSync(join(fixture.dir, 'artifact.zip')),
+            ),
+        )
+        assert.deepEqual(
+            JSON.parse(readFileSync(join(fixture.dir, 'download/artifact.json'))),
+            JSON.parse(readFileSync(join(fixture.dir, 'artifact.json'))),
+        )
+        const result = fixture.run('latest', 'npmjs')
+        assert.equal(result.status, 0, result.stderr)
+        assert.equal(fixture.state().publishes.length, 1)
+        assert.ok(
+            fixture.state().ghRequests.some((path) => path.endsWith('actions/runs/123/attempts/1')),
+        )
+        assert.ok(!fixture.state().ghRequests.some((path) => path.endsWith('actions/runs/123')))
+        assert.ok(
+            fixture.state().ghRequests.some((path) => path.endsWith('actions/artifacts/456/zip')),
+        )
+    } finally {
+        fixture.close()
+    }
+})
+
+for (const [label, options, env, diagnostic] of [
+    [
+        'wrong attempt response',
+        { runPatch: { run_attempt: 2 } },
+        {},
+        /Original run attempt mismatch/,
+    ],
+    ['failed original attempt', { runPatch: { conclusion: 'failure' } }, {}, /failure/],
+    [
+        'wrong artifact attempt',
+        { artifactPatch: { name: 'remark-application-links-release-123-2' } },
+        {},
+        /Original artifact attempt mismatch/,
+    ],
+    [
+        'wrong artifact run',
+        { artifactPatch: { workflow_run: { id: 999 } } },
+        {},
+        /Original artifact run mismatch/,
+    ],
+    ['wrong archive ID', {}, { ARTIFACT_ID: '789' }, /Original artifact ID mismatch/],
+    [
+        'wrong archive digest',
+        {},
+        { ARTIFACT_DIGEST: `sha256:${'f'.repeat(64)}` },
+        /Original archive digest mismatch/,
+    ],
+    ['expired archive', { artifactPatch: { expired: true } }, {}, /Original artifact expired/],
+    ['legacy schema', { schema: 1 }, {}, /legacy artifact schema.*original-byte recovery/],
+    ['missing attempt identity', {}, { ARTIFACT_RUN_ATTEMPT: '' }, /legacy unversioned records/],
+]) {
+    test(`original artifact binding rejects ${label} before any registry access`, () => {
+        const fixture = publisherFixture(options)
+        try {
+            const result = fixture.run('latest', 'npmjs', 'bootstrap-npm', env)
+            assert.notEqual(result.status, 0)
+            assert.match(result.stderr, diagnostic)
+            assert.deepEqual(fixture.state().commands, [])
+        } finally {
+            fixture.close()
+        }
+    })
+}
+
+test('tampered retained ZIP or receipt cannot authorize a publication', () => {
+    for (const file of ['artifact.zip', 'artifact.json']) {
+        const fixture = publisherFixture()
+        try {
+            if (file === 'artifact.zip') writeFileSync(join(fixture.dir, file), 'different archive')
+            else {
+                const identity = JSON.parse(readFileSync(join(fixture.dir, file)))
+                identity.sourceRunAttempt = '2'
+                writeFileSync(join(fixture.dir, file), JSON.stringify(identity))
+            }
+            const result = fixture.run('latest', 'npmjs')
+            assert.notEqual(result.status, 0)
+            assert.match(
+                result.stderr,
+                file === 'artifact.zip'
+                    ? /Original archive bytes do not match digest/
+                    : /Retained artifact identity mismatch/,
+            )
+            assert.deepEqual(fixture.state().commands, [])
+        } finally {
+            fixture.close()
+        }
     }
 })

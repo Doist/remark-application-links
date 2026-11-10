@@ -62,60 +62,74 @@ function inspect(tarball) {
     }
 }
 
-function verify() {
+const trustedSource = () =>
+    JSON.parse(run(process.execPath, [resolve(root, 'scripts/validate-source-run.mjs')]))
+const receipt = ({ run: source, artifact }) => ({
+    schema: 1,
+    sourceRunId: String(source.id),
+    sourceRunAttempt: String(source.run_attempt),
+    sourceSha: source.head_sha,
+    artifactId: String(artifact.id),
+    artifactName: artifact.name,
+    archiveDigest: artifact.digest,
+})
+
+function inspectArchive(archive, trusted) {
+    assert.equal(
+        `sha256:${hash(readFileSync(archive), 'sha256', 'hex')}`,
+        trusted.artifact.digest,
+        'Original archive bytes do not match digest',
+    )
+    const filename = `todoist-remark-application-links-${process.env.RELEASE_VERSION}.tgz`
+    const files = run('unzip', ['-Z1', archive]).split('\n').sort()
+    assert.deepEqual(
+        files,
+        ['release.json', filename].sort(),
+        'Unexpected original archive entries',
+    )
+    return Object.fromEntries(
+        files.map((file) => [file, execFileSync('unzip', ['-p', archive, file])]),
+    )
+}
+
+function verify(trusted) {
     const metadata = json(resolve(output, 'release.json'))
     assert.equal(
         metadata.schema,
-        1,
-        'Unsupported artifact schema: retain the original bytes and arrange reviewed manual recovery; never repack a published version',
+        2,
+        'Unsupported or legacy artifact schema: retain the original bytes and follow RELEASING.md original-byte recovery; never repack a published version',
     )
     assert.match(process.env.RELEASE_SHA || '', /^[a-f0-9]{40}$/)
     assert.match(process.env.RELEASE_VERSION || '', /^\d+\.\d+\.\d+$/)
     assert.equal(metadata.sourceSha, process.env.RELEASE_SHA)
     assert.match(process.env.ARTIFACT_RUN_ID || '', /^\d+$/)
     assert.equal(metadata.sourceRunId, process.env.ARTIFACT_RUN_ID)
+    assert.equal(
+        metadata.sourceRunAttempt,
+        process.env.ARTIFACT_RUN_ATTEMPT,
+        'Metadata original attempt mismatch',
+    )
     assert.equal(metadata.version, process.env.RELEASE_VERSION)
     assert.equal(metadata.filename, `todoist-remark-application-links-${metadata.version}.tgz`)
     const tarball = resolve(output, metadata.filename)
     const actual = inspect(tarball)
     for (const key of Object.keys(actual)) assert.equal(metadata[key], actual[key])
-    // Local bootstrap must also bind these bytes to GitHub's retained artifact,
-    // not merely to a self-declared release.json naming a successful source run.
-    const retained = mkdtempSync(resolve(tmpdir(), 'remark-retained-'))
-    try {
-        try {
-            execFileSync(
-                'gh',
-                [
-                    'run',
-                    'download',
-                    process.env.ARTIFACT_RUN_ID,
-                    '--repo',
-                    'todoist/remark-application-links',
-                    '--name',
-                    'remark-application-links-release',
-                    '--dir',
-                    retained,
-                ],
-                { stdio: 'pipe' },
-            )
-        } catch {
-            throw new Error(
-                'Cannot retrieve original run artifact: retain original bytes and checksums for approved manual recovery; never repack a published version',
-            )
-        }
-        assert.deepEqual(
-            json(resolve(retained, 'release.json')),
-            metadata,
-            'Metadata differs from the original run artifact',
-        )
-        assert.ok(
-            readFileSync(resolve(retained, metadata.filename)).equals(readFileSync(tarball)),
-            'Tarball differs from the original run artifact',
-        )
-    } finally {
-        rmSync(retained, { recursive: true, force: true })
-    }
+    // Bind local bytes to the immutable uploaded ZIP and its independently retained identity.
+    assert.deepEqual(
+        json(resolve(output, 'artifact.json')),
+        receipt(trusted),
+        'Retained artifact identity mismatch',
+    )
+    const entries = inspectArchive(resolve(output, 'artifact.zip'), trusted)
+    assert.deepEqual(
+        JSON.parse(entries['release.json'].toString('utf8')),
+        metadata,
+        'Metadata differs from the original run artifact',
+    )
+    assert.ok(
+        entries[metadata.filename].equals(readFileSync(tarball)),
+        'Tarball differs from the original run artifact',
+    )
     return { metadata, tarball }
 }
 
@@ -129,6 +143,7 @@ if (command === 'pack') {
     assert.equal(process.env.GITHUB_REF, 'refs/heads/main')
     assert.equal(process.env.GITHUB_EVENT_NAME, 'workflow_dispatch')
     assert.match(process.env.GITHUB_RUN_ID || '', /^\d+$/)
+    assert.match(process.env.GITHUB_RUN_ATTEMPT || '', /^[1-9]\d*$/)
     assert.equal(
         run('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: root }),
         '',
@@ -152,19 +167,58 @@ if (command === 'pack') {
         }),
     )
     const metadata = {
-        schema: 1,
+        schema: 2,
         ...inspect(resolve(output, packed.filename)),
         sourceSha,
         sourceRunId: process.env.GITHUB_RUN_ID,
+        sourceRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
         filename: packed.filename,
     }
     writeFileSync(resolve(output, 'release.json'), `${JSON.stringify(metadata, null, 2)}\n`)
     console.log(JSON.stringify(metadata, null, 2))
+} else if (command === 'download') {
+    const trusted = trustedSource()
+    mkdirSync(output, { recursive: true })
+    assert.deepEqual(
+        readdirSync(output),
+        [],
+        'Use an empty directory; never replace retained bytes',
+    )
+    const temporary = mkdtempSync(resolve(tmpdir(), 'remark-original-'))
+    try {
+        const archive = resolve(temporary, 'artifact.zip')
+        try {
+            writeFileSync(
+                archive,
+                execFileSync(
+                    'gh',
+                    [
+                        'api',
+                        `repos/todoist/remark-application-links/actions/artifacts/${process.env.ARTIFACT_ID}/zip`,
+                    ],
+                    { maxBuffer: 20 * 1024 * 1024 },
+                ),
+            )
+        } catch {
+            throw new Error(
+                'Cannot retrieve original archive: retain original bytes and follow RELEASING.md original-byte recovery; never repack a published version',
+            )
+        }
+        const entries = inspectArchive(archive, trusted)
+        for (const [name, bytes] of Object.entries(entries))
+            writeFileSync(resolve(output, name), bytes, { flag: 'wx' })
+        writeFileSync(resolve(output, 'artifact.zip'), readFileSync(archive), { flag: 'wx' })
+        writeFileSync(
+            resolve(output, 'artifact.json'),
+            `${JSON.stringify(receipt(trusted), null, 2)}\n`,
+            { flag: 'wx' },
+        )
+        console.log(JSON.stringify(verify(trusted).metadata, null, 2))
+    } finally {
+        rmSync(temporary, { recursive: true, force: true })
+    }
 } else if (command === 'verify') {
-    execFileSync(process.execPath, [resolve(root, 'scripts/validate-source-run.mjs')], {
-        stdio: 'inherit',
-    })
-    console.log(JSON.stringify(verify().metadata, null, 2))
+    console.log(JSON.stringify(verify(trustedSource()).metadata, null, 2))
 } else if (command === 'publish' || command === 'bootstrap-npm') {
     if (command === 'bootstrap-npm')
         assert.notEqual(
@@ -173,10 +227,7 @@ if (command === 'pack') {
             'First publication needs an interactive maintainer',
         )
     assert.ok(['npmjs', 'github'].includes(destination), 'Select exactly one destination')
-    execFileSync(process.execPath, [resolve(root, 'scripts/validate-source-run.mjs')], {
-        stdio: 'inherit',
-    })
-    const { metadata, tarball } = verify()
+    const { metadata, tarball } = verify(trustedSource())
     assert.ok(
         process.env.GH_PACKAGES_TOKEN,
         'GH_PACKAGES_TOKEN with read access to the transferred public mirror is required for both-registry preflight',
@@ -350,6 +401,6 @@ if (command === 'pack') {
     }
 } else {
     throw new Error(
-        'Usage: node scripts/release.mjs pack|verify DIRECTORY, publish DIRECTORY npmjs|github, or bootstrap-npm DIRECTORY',
+        'Usage: node scripts/release.mjs pack|download|verify DIRECTORY, publish DIRECTORY npmjs|github, or bootstrap-npm DIRECTORY',
     )
 }

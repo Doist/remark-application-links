@@ -93,30 +93,42 @@ gh workflow run publish.yml --repo todoist/remark-application-links --ref main -
 gh run list --repo todoist/remark-application-links --workflow publish.yml --event workflow_dispatch --limit 10 --json databaseId,headSha,displayTitle,status,conclusion
 ```
 
-Select the successful `remark-application-links pack FULL_SHA` run. Packing always
+Select the original successful attempt of the `remark-application-links pack FULL_SHA` run. A later failed rerun does not invalidate its original artifact. Packing always
 checks out that run's exact main commit; there is no arbitrary checkout input.
 It installs without lifecycle scripts, lints, tests, builds, and packs once with
-`--ignore-scripts`. It uploads **remark-application-links-release**, containing
-`todoist-remark-application-links-1.0.5.tgz` and `release.json` (schema 1, SHA-256,
-SHA-512 integrity, source SHA, run ID, filename, name and version).
+`--ignore-scripts`. It uploads **remark-application-links-release-RUN_ID-ATTEMPT**, containing
+`todoist-remark-application-links-1.0.5.tgz` and `release.json` (schema 2, SHA-256,
+SHA-512 integrity, source SHA, run ID, original attempt, filename, name and version).
+The pack summary records the immutable artifact ID and archive SHA-256; retain
+these with the original run/attempt evidence. Upload names include the attempt,
+so reruns cannot replace the original artifact.
 No tag, release, registry write or team message occurs during pack.
 
-Set the two values below from that actual successful run, never a PR run or a
+Set the run/attempt, artifact ID/digest and source SHA below from that actual
+successful attempt and its pack summary, never a PR run or a
 self-declared metadata file. They are unknown until the future authorized run:
 
 ```sh
 export ARTIFACT_RUN_ID=ACTUAL_SUCCESSFUL_PACK_RUN_ID
+export ARTIFACT_RUN_ATTEMPT=ACTUAL_SUCCESSFUL_PACK_ATTEMPT
+export ARTIFACT_ID=ACTUAL_IMMUTABLE_ARCHIVE_ID
+export ARTIFACT_DIGEST=sha256:ACTUAL_64_HEX_ARCHIVE_DIGEST
 export RELEASE_SHA=ACTUAL_40_CHARACTER_PACK_HEAD_SHA
 export RELEASE_VERSION=1.0.5
 export RELEASE_TAG=latest
 mkdir -p release-artifact
-gh run download "$ARTIFACT_RUN_ID" --repo todoist/remark-application-links --name remark-application-links-release --dir release-artifact
+node scripts/release.mjs download release-artifact
 node scripts/release.mjs verify release-artifact
 ```
 
 Use these commands from the reviewed repository checkout with current compatible
 release scripts, Node 24.20.0, npm 11.19.0 and `gh` authenticated for repository
-Actions reads. Retain the artifact, checksum, source/run URL and workflow evidence
+Actions reads and `unzip` available. The downloader validates
+`actions/runs/RUN_ID/attempts/N`, the artifact ID/name/source/digest API record,
+and the downloaded ZIP checksum before extracting its two expected files.
+It also retains **artifact.zip** (unchanged archive bytes) and **artifact.json**
+(the run/attempt/source/immutable artifact ID/name/archive digest receipt).
+Retain all four files, checksum, source/run/attempt URL and workflow evidence
 in approved durable release storage; the Actions copy expires after **90 days**.
 Keep the original artifact even if only one registry accepts it.
 
@@ -134,9 +146,12 @@ With the verified artifact and variables above, run in a real terminal:
 node scripts/release.mjs bootstrap-npm release-artifact
 ```
 
-The script validates the historical successful run, exact workflow ID/path,
+The script validates the historical successful attempt, exact workflow ID/path,
 repository, event, source/main ancestry and source manifest. It independently
-retrieves that run's original artifact and compares the local bytes and metadata.
+checks the immutable artifact API identity/digest and the retained ZIP against
+the explicit original digest, then compares its metadata and tarball with the
+local files. It never relies on the mutable latest-attempt status or a static
+artifact name.
 Both npm and GitHub existing same-version copies must match the retained digest;
 GitHub visibility/read access must be established. Only then does it invoke npm
 login, repeat both-registry preflight, guard `latest`, and publish to npmjs with
@@ -155,6 +170,8 @@ Use the same run ID, source SHA and exact version for each destination:
 ```sh
 gh workflow run publish.yml --repo todoist/remark-application-links --ref main \
   -f operation=publish -f artifact_run_id="$ARTIFACT_RUN_ID" \
+  -f artifact_run_attempt="$ARTIFACT_RUN_ATTEMPT" -f artifact_id="$ARTIFACT_ID" \
+  -f artifact_digest="$ARTIFACT_DIGEST" \
   -f release_sha="$RELEASE_SHA" -f version="$RELEASE_VERSION" \
   -f destination=github -f release_tag=latest
 ```
@@ -174,7 +191,8 @@ reviewed semver manifest/lock bump; do not rebuild old release lines.
 
 ### Confirm the release record, including interrupted drafts
 
-The release record must retain the **original tarball and release.json**. A tag
+The release record must retain the **original tarball, release.json, artifact.zip
+and artifact.json receipt** for schema2 artifacts. A tag
 name in `gh release list` is not completion: the command includes drafts. Before
 calling the release complete, fetch the existing tag without force, peel it to a
 commit and compare it with `RELEASE_SHA`; inspect the release state and assets:
@@ -186,9 +204,11 @@ gh release view "v${RELEASE_VERSION}" --repo todoist/remark-application-links \
   --json tagName,isDraft,isPrerelease,publishedAt,assets,url
 record_dir="$(mktemp -d)"
 gh release download "v${RELEASE_VERSION}" --repo todoist/remark-application-links \
-  --dir "$record_dir" --pattern "todoist-remark-application-links-${RELEASE_VERSION}.tgz" --pattern release.json
+  --dir "$record_dir" --pattern "todoist-remark-application-links-${RELEASE_VERSION}.tgz" --pattern release.json --pattern artifact.zip --pattern artifact.json
 cmp "release-artifact/todoist-remark-application-links-${RELEASE_VERSION}.tgz" "$record_dir/todoist-remark-application-links-${RELEASE_VERSION}.tgz"
 cmp release-artifact/release.json "$record_dir/release.json"
+cmp release-artifact/artifact.zip "$record_dir/artifact.zip"
+cmp release-artifact/artifact.json "$record_dir/artifact.json"
 ```
 
 Completion requires the exact source tag commit, `isDraft=false`,
@@ -202,8 +222,8 @@ notes must start with `[Posted by Jarvis]`, a blank line, then the body.
 
 ## Partial publication and durable recovery
 
-Rerun only the missing destination with the **original artifact run, SHA and
-version**. Do not bump or repack an immutable version. Successful equal copies are
+Rerun only the missing destination with the **original run, successful attempt,
+artifact ID, archive digest, SHA and version**. Do not bump or repack an immutable version. Successful equal copies are
 skipped. Any byte mismatch stops the whole operation before writing anywhere;
 resolve it by recovering the original published bytes, never overwriting them.
 Concurrent manual publications must be serialized with workflow releases by the
@@ -221,7 +241,34 @@ Later reviewed changes to the workflow or release scripts do not invalidate an
 artifact: validation uses the **historical** successful run's workflow identity,
 path, event, exact checkout SHA, source manifest and main ancestry, plus schema and
 original retained bytes. It never compares the old workflow contents to today's
-workflow. Schema 1 remains supported. If its schema becomes unsupported, its
+workflow. Schema 2 binds the original attempt; later failed attempts are irrelevant.
+If its schema becomes unsupported, its
 artifact expires, the original run is deleted, or main history no longer includes
 it, stop for reviewed manual recovery using archived original bytes/checksums and
 run evidence. Never solve that situation by rebuilding an already-published version.
+
+### Legacy unversioned records: original-byte recovery
+
+Schema1 `release.json` and the old static `remark-application-links-release` name
+lack an original-attempt binding. The automated path rejects them; do not guess
+attempt1, rewrite their metadata as schema2, or repack the immutable version.
+The maintainer must retain the original tarball/release.json and recover the
+**original uploaded ZIP, immutable artifact ID and GitHub archive digest** from
+approved archive storage or the existing Actions artifact API record. Inspect
+`gh api repos/todoist/remark-application-links/actions/artifacts/ARTIFACT_ID` and
+`gh api repos/todoist/remark-application-links/actions/runs/RUN_ID/attempts/N`, plus
+that attempt's upload job logs, to establish which successful reviewed attempt
+created that exact artifact. The latest run status is not this evidence.
+
+Compare the original archive digest and its contained tarball/metadata with the
+retained copies and any already-published registry bytes. Obtain a separately
+reviewed manual recovery procedure explicitly bound to that proven original
+attempt, artifact ID and digest, retaining all C03/C05/C08/visibility/latest/auth
+guards. If the identity or original bytes cannot be established, stop for the
+package owner; do not synthesize a new archive or overwrite/delete/recreate a
+published version. Missing old ZIP/receipt release assets require this procedure,
+not reconstruction of historical releases. No live recovery is performed during
+preparation.
+
+API references: [historical workflow attempts](https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run-attempt),
+[immutable artifact IDs and digests](https://docs.github.com/en/rest/actions/artifacts#get-an-artifact).

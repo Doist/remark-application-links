@@ -10,7 +10,17 @@ export async function requireAncestor(base, head, compare) {
     assert.equal(result.merge_base_commit.sha, base)
 }
 
-export async function validateSourceRun(run, workflowId, sourceSha, version, compare) {
+export async function validateSourceRun(
+    run,
+    workflowId,
+    sourceSha,
+    version,
+    compare,
+    runId,
+    attempt,
+) {
+    assert.equal(String(run.id), runId, 'Original run ID mismatch')
+    assert.equal(String(run.run_attempt), attempt, 'Original run attempt mismatch')
     assert.match(sourceSha, sha)
     assert.match(version, /^\d+\.\d+\.\d+$/)
     assert.equal(run.repository.full_name.toLowerCase(), repository)
@@ -31,6 +41,26 @@ export async function validateSourceRun(run, workflowId, sourceSha, version, com
     await requireAncestor(run.head_sha, 'main', compare)
     // Do not compare historical workflow bytes to current main: maintenance must not
     // invalidate an original immutable artifact. Its metadata schema is checked separately.
+}
+
+export function validateArtifact(artifact, run, artifactId, digest) {
+    assert.equal(String(artifact.id), artifactId, 'Original artifact ID mismatch')
+    assert.equal(
+        artifact.expired,
+        false,
+        'Original artifact expired; recover original archived bytes, never repack',
+    )
+    assert.equal(
+        artifact.name,
+        `remark-application-links-release-${run.id}-${run.run_attempt}`,
+        'Original artifact attempt mismatch or legacy unversioned record: follow RELEASING.md original-byte recovery; never repack',
+    )
+    assert.equal(artifact.digest, digest, 'Original archive digest mismatch')
+    assert.equal(artifact.workflow_run?.id, run.id, 'Original artifact run mismatch')
+    assert.equal(artifact.workflow_run?.head_sha, run.head_sha, 'Original artifact source mismatch')
+    assert.equal(artifact.workflow_run?.head_branch, 'main')
+    assert.equal(artifact.workflow_run?.repository_id, 300606066)
+    assert.equal(artifact.workflow_run?.head_repository_id, 300606066)
 }
 
 export function validatePublicationTag(version, tag, latest) {
