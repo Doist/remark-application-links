@@ -1,63 +1,120 @@
 name: Release package
+run-name: remark-application-links ${{ inputs.operation }} ${{ github.sha }}
 
 on:
-    release:
-        types: [created]
     workflow_dispatch:
+        inputs:
+            operation:
+                description: Pack only, or publish an existing retained artifact
+                type: choice
+                options: [pack, publish]
+                default: pack
+                required: true
+            artifact_run_id:
+                description: Successful pack run ID (publish only)
+                type: string
+            artifact_run_attempt:
+                description: Original successful pack attempt number (publish only)
+                type: string
+            artifact_id:
+                description: Immutable uploaded archive artifact ID (publish only)
+                type: string
+            artifact_digest:
+                description: Original archive digest, sha256 followed by colon and 64 hex characters
+                type: string
+            release_sha:
+                description: Full source commit from that pack run (publish only)
+                type: string
+            version:
+                description: Exact retained artifact version (publish only)
+                type: string
+            destination:
+                description: Publish only this missing registry copy
+                type: choice
+                options: [github, npmjs]
+                default: github
+            release_tag:
+                description: Use migration-recovery for an older missing mirror
+                type: choice
+                options: [latest, migration-recovery]
+                default: latest
 
 permissions:
-    # Enable the use of OIDC for trusted publishing and npm provenance
-    id-token: write
-    # Enable the use of GitHub Packages registry
-    packages: write
+    contents: read
+
+concurrency:
+    group: remark-application-links-release
+    cancel-in-progress: false
 
 jobs:
-    publish:
+    pack:
+        if: inputs.operation == 'pack' && github.repository == 'todoist/remark-application-links' && github.ref == 'refs/heads/main'
         runs-on: ubuntu-latest
-        timeout-minutes: 60
+        timeout-minutes: 20
         steps:
-            - name: Checkout
-              uses: actions/checkout@v4
-
-            - name: Setup Node
-              uses: actions/setup-node@v3
+            - uses: actions/checkout@v4
               with:
-                  node-version: 24
-
-            - name: Ensure npm 11.5.1 or later is installed
-              run: npm install -g npm@latest
-
-            - name: Install dependencies
-              run: npm ci
-
-            - name: Lint
-              run: npm run lint
+                  ref: ${{ github.sha }}
+                  persist-credentials: false
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24.20.0
+            - run: npm ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps
+            - run: npm run test:release
+            - run: npm run lint
               env:
                   CI: true
-
-            - name: Test
-              run: npm run test:ci
-
-            - name: Build
-              run: npm run build
-
-            - name: Publish to GitHub Package Registry
-              uses: actions/setup-node@v3
+            - run: npm run test:ci
+            - run: npm run build
+            - run: node scripts/release.mjs pack release-artifact
+            - uses: actions/upload-artifact@v4
+              id: artifact
               with:
-                  node-version: 24
-                  registry-url: https://npm.pkg.github.com/
-                  scope: '@doist'
-            - run: npm publish
+                  name: remark-application-links-release-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: release-artifact/
+                  if-no-files-found: error
+                  retention-days: 90
+            - name: Record original archive identity
               env:
-                  NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
+                  ARCHIVE_SHA256: ${{ steps.artifact.outputs.artifact-digest }}
+              run: |
+                  echo "Run: $GITHUB_RUN_ID; attempt: $GITHUB_RUN_ATTEMPT; artifact: $ARTIFACT_ID; digest: sha256:$ARCHIVE_SHA256" >> "$GITHUB_STEP_SUMMARY"
+                  cat release-artifact/release.json >> "$GITHUB_STEP_SUMMARY"
 
-            - name: Clear npm config between GitHub/npm registries
-              run: rm -f $NPM_CONFIG_USERCONFIG
-
-            - name: Publish to npm registry
-              uses: actions/setup-node@v3
+    publish:
+        if: inputs.operation == 'publish' && github.repository == 'todoist/remark-application-links' && github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        environment: npm-release
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            actions: read
+            packages: write
+            id-token: write
+        env:
+            ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+            ARTIFACT_RUN_ATTEMPT: ${{ inputs.artifact_run_attempt }}
+            ARTIFACT_ID: ${{ inputs.artifact_id }}
+            ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+            RELEASE_SHA: ${{ inputs.release_sha }}
+            RELEASE_VERSION: ${{ inputs.version }}
+            RELEASE_TAG: ${{ inputs.release_tag }}
+        steps:
+            - uses: actions/checkout@v4
               with:
-                  node-version: 24
-                  registry-url: https://registry.npmjs.org/
-                  scope: '@doist'
-            - run: npm publish --provenance --access public
+                  ref: ${{ github.sha }}
+                  persist-credentials: false
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24.20.0
+            - name: Download exact archive after historical attempt validation
+              run: node scripts/release.mjs download release-artifact
+              env:
+                  GH_TOKEN: ${{ github.token }}
+            - name: Publish retained bytes after both-registry preflight
+              run: node scripts/release.mjs publish release-artifact "$DESTINATION"
+              env:
+                  DESTINATION: ${{ inputs.destination }}
+                  GH_TOKEN: ${{ github.token }}
+                  GH_PACKAGES_TOKEN: ${{ github.token }}

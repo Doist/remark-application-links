@@ -1,6 +1,6 @@
 {
-    "version": "1.0.4",
-    "repository": "https://github.com/Doist/remark-application-links",
+    "version": "1.0.5",
+    "repository": "https://github.com/todoist/remark-application-links",
     "license": "MIT",
     "main": "dist/index.js",
     "typings": "dist/index.d.ts",
@@ -17,25 +17,27 @@
         "test": "tsdx test",
         "test:ci": "tsdx test --ci --coverage --maxWorkers=2",
         "test:watch": "tsdx test --watch",
-        "lint": "tsdx lint",
+        "lint": "tsdx lint && prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
         "prepare": "tsdx build",
         "setup": "npm install && npm run validate",
-        "validate": "npm run lint && npm run test"
+        "validate": "npm run lint && npm run test",
+        "test:release": "node --test scripts/*.test.mjs"
     },
     "peerDependencies": {},
     "husky": {
         "hooks": {
-            "pre-commit": "tsdx lint"
+            "pre-commit": "npm run lint"
         }
     },
-    "prettier": "@doist/prettier-config",
-    "name": "@doist/remark-application-links",
+    "prettier": "@todoist/prettier-config",
+    "name": "@todoist/remark-application-links",
     "author": "Henning Muszynski",
     "module": "dist/remark-application-links.esm.js",
     "devDependencies": {
-        "@doist/prettier-config": "^3.0.5",
+        "@todoist/prettier-config": "4.0.2",
         "@types/unist": "^2.0.3",
         "husky": "^4.3.0",
+        "prettier": "^3.0.0",
         "remark": "^12.0.1",
         "remark-html": "^12.0.0",
         "tsdx": "^0.14.0",
@@ -45,5 +47,10 @@
     "dependencies": {
         "unist-util-flatmap": "^1.0.0",
         "unist-util-visit-parents": "^3.1.0"
+    },
+    "eslint": {
+        "rules": {
+            "prettier/prettier": "off"
+        }
     }
 }
