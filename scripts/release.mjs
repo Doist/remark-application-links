@@ -230,15 +230,20 @@ if (command === 'pack') {
     const { metadata, tarball } = verify(trustedSource())
     assert.ok(
         process.env.GH_PACKAGES_TOKEN,
-        'GH_PACKAGES_TOKEN with read access to the transferred public mirror is required for both-registry preflight',
+        'GH_PACKAGES_TOKEN with package read access is required for both-registry preflight',
     )
+    const firstMirror = process.env.FIRST_GITHUB_MIRROR === '1'
+    if (process.env.FIRST_GITHUB_MIRROR) {
+        assert.ok(firstMirror, 'FIRST_GITHUB_MIRROR must be 1 or unset')
+        assert.notEqual(process.env.GITHUB_ACTIONS, 'true', 'First GitHub mirror is local only')
+    }
     const isolated = mkdtempSync(resolve(tmpdir(), 'remark-application-links-publish-'))
     try {
         // Separate directories/configs prevent scope or credentials from crossing registries.
         const baseEnv = Object.fromEntries(
             Object.entries(process.env).filter(
                 ([key]) =>
-                    !/^(npm_config_|node_auth_token$|npm_token$|gh_packages_token$|gh_token$|github_token$)/i.test(
+                    !/^(npm_config_|node_auth_token$|npm_token$|gh_packages_token$|gh_token$|github_token$|first_github_mirror$)/i.test(
                         key,
                     ),
             ),
@@ -286,31 +291,62 @@ if (command === 'pack') {
             )
         }
         const preflight = () => {
-            // This public mirror already exists and must transfer with the organization.
-            // Require independent visibility and repository linkage evidence before any write.
-            const mirror = JSON.parse(
-                run('gh', ['api', 'orgs/todoist/packages/npm/remark-application-links'], {
-                    env: { ...baseEnv, GH_TOKEN: process.env.GH_PACKAGES_TOKEN },
-                }),
+            const githubOptions = { env: { ...baseEnv, GH_TOKEN: process.env.GH_PACKAGES_TOKEN } }
+            const response = spawnSync(
+                'gh',
+                ['api', 'orgs/todoist/packages/npm/remark-application-links'],
+                { encoding: 'utf8', ...githubOptions },
             )
-            assert.equal(
-                mirror.visibility,
-                'public',
-                'Resolve GitHub mirror visibility before publication',
-            )
-            assert.equal(
-                mirror.repository?.id,
-                300606066,
-                'Resolve GitHub mirror repository linkage',
-            )
-            // Readable package metadata proves package access;
-            // a package-level E404 could hide missing rights and must never authorize a write.
-            const githubTags = lookup('github', metadata.name, 'dist-tags', false)
-            assert.ok(
-                githubTags && typeof githubTags === 'object' && !Array.isArray(githubTags),
-                'Cannot establish GitHub package read access',
-            )
-            return Object.fromEntries(
+            const mirror = JSON.parse(response.stdout)
+            const missingMirror = response.status !== 0
+            if (missingMirror) {
+                // The old @doist package can remain in its original namespace. A 404
+                // from an ordinary reader is ambiguous; establish owner rights using
+                // the SAME credential that reads the package, never an ACL-filtered list.
+                assert.ok(firstMirror, 'Missing GitHub mirror requires local owner preflight')
+                assert.equal(String(mirror.status), '404', 'GitHub package lookup failed')
+                const membership = JSON.parse(
+                    run('gh', ['api', 'user/memberships/orgs/todoist'], githubOptions),
+                )
+                assert.equal(membership.state, 'active', 'GitHub owner membership must be active')
+                assert.equal(
+                    membership.role,
+                    'admin',
+                    'GitHub package absence requires organization owner evidence',
+                )
+                assert.equal(membership.organization?.login.toLowerCase(), 'todoist')
+                const { registry, options } = contexts.github
+                const username = JSON.parse(
+                    run('npm', ['whoami', '--json', `--registry=${registry}`], options),
+                )
+                assert.ok(
+                    typeof username === 'string' && username.length > 0,
+                    'GitHub registry authentication failed',
+                )
+                assert.equal(
+                    lookup('github', metadata.name, 'dist-tags'),
+                    undefined,
+                    'Contradictory GitHub package absence evidence',
+                )
+            } else {
+                assert.equal(
+                    mirror.visibility,
+                    'public',
+                    'Resolve GitHub mirror visibility before publication',
+                )
+                assert.equal(
+                    mirror.repository?.id,
+                    300606066,
+                    'Resolve GitHub mirror repository linkage',
+                )
+                // REST visibility alone cannot establish readable registry metadata.
+                const githubTags = lookup('github', metadata.name, 'dist-tags', false)
+                assert.ok(
+                    githubTags && typeof githubTags === 'object' && !Array.isArray(githubTags),
+                    'Cannot establish GitHub package read access',
+                )
+            }
+            const copies = Object.fromEntries(
                 ['npmjs', 'github'].map((name) => {
                     const integrity = lookup(name, spec, 'dist.integrity')
                     if (integrity !== undefined)
@@ -322,6 +358,13 @@ if (command === 'pack') {
                     return [name, integrity]
                 }),
             )
+            if (missingMirror)
+                assert.equal(
+                    copies.github,
+                    undefined,
+                    'Contradictory GitHub version absence evidence',
+                )
+            return copies
         }
         let copies = preflight()
         const { registry, options } = contexts[destination]

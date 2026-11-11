@@ -8,10 +8,9 @@ merge it, pack that main commit, publish its retained bytes to both registries,
 then record `vVERSION` in GitHub. There is no semantic-release version calculation
 or new-scope reset. Old `@doist` releases, tags, and changelog entries stay intact.
 
-**Do not merge this migration until @todoist/prettier-config@4.0.2 exists on npm
-and the real lock/install checks pass.** The checked-in old lock dependency graph
-is deliberately retained until then; only root identity/version metadata changed.
-The new config requires Prettier 3. TSDX still checks ESLint rules; its incompatible
+**@todoist/prettier-config@4.0.2 is now published on npm.** The lockfile was
+regenerated against the real registry and the fresh install, lint, 11 behavior
+tests and build pass. The new config requires Prettier 3. TSDX still checks ESLint rules; its incompatible
 Prettier 2 rule is disabled and the Prettier 3 CLI checks formatting separately.
 The package's Node >=12 runtime requirement and distribution entrypoints are unchanged.
 Build/release tooling uses Node 24.20.0 and npm 11.19.0 (bundled with that Node).
@@ -20,7 +19,7 @@ TSDX 0.14 / ts-jest 25 lock has a TypeScript <4 peer despite this package's exis
 TypeScript 4.0.3. Strict-peer install fails on that pre-existing constraint; the
 11 behavior tests and build pass. No unrelated compiler/test-tool upgrade is made.
 
-After the upstream publication, in this same branch/worktree:
+Validate the committed dependency graph in this same branch/worktree:
 
 ```sh
 npm view @todoist/prettier-config@4.0.2 version --registry=https://registry.npmjs.org/
@@ -33,7 +32,7 @@ npm run test:release
 npm pack --ignore-scripts --dry-run
 ```
 
-Review the real lock diff and commit it before merge. Never commit local paths,
+Review any real lock diff and commit it before merge. Never commit local paths,
 package aliases, invented tarball URLs or integrity hashes. Disposable source
 checks do not prove new-scope registry resolution.
 
@@ -47,7 +46,7 @@ are executed by PR preparation.
 - Workflow and npm trusted-publisher caller: **publish.yml**, path
   `.github/workflows/publish.yml`; no reusable caller.
 - Runner: GitHub-hosted `ubuntu-latest`; Node `24.20.0` / npm `11.19.0`.
-- Create/review the **npm-release** environment, restrict it to `main`, and require
+- Before using automated publication, create/review the **npm-release** environment, restrict it to `main`, and require
   the existing authorized release maintainer's approval. The pack-only job has no
   environment or registry write permissions. Environment settings:
   <https://github.com/todoist/remark-application-links/settings/environments>.
@@ -55,15 +54,17 @@ are executed by PR preparation.
   `id-token: write`. GitHub reads use `GH_TOKEN`; registry reads/writes use
   `GH_PACKAGES_TOKEN`. In Actions both are supplied from the job's `github.token`.
   They are removed from every npmjs subprocess. No npm publication token is stored.
-- Independently inspect the transferred **public** GitHub mirror, its linked
+- Independently inspect the **public** GitHub mirror, its linked
   repository, publisher rights, inheritance and required consumer **Manage Actions
-  access** grants. Existing mirror ID `1570882` was public; npm visibility does not
-  establish GitHub visibility. The tool requires readable package metadata,
+  access** grants. Old `@doist` mirror ID `1570882` remains public in the old
+  namespace after the repository transfer; it must stay untouched. npm visibility does not
+  establish GitHub visibility. For an existing mirror the tool requires readable package metadata,
   `visibility=public` and the correct repository ID before **any** registry write.
-  A missing/hidden mirror, denied access, or changed visibility blocks publication,
-  including npm bootstrap; an administrator must resolve it first.
+  A hidden mirror, denied access, or changed visibility blocks publication,
+  including npm bootstrap. A genuinely absent new mirror uses the local owner
+  path below; ordinary package readers cannot infer absence from a 404.
   <https://github.com/orgs/todoist/packages/npm/package/remark-application-links/settings>
-- Confirm the transferred package state using:
+- Confirm the new package state using:
   `gh api orgs/todoist/packages/npm/remark-application-links`.
   Review the current `latest` and exact target versions in both registries. The
   publisher checks both existing exact-version integrities before even a single
@@ -133,6 +134,42 @@ in approved durable release storage; the Actions copy expires after **90 days**.
 Keep the original artifact even if only one registry accepts it.
 
 ## First interactive npm publication
+
+### Create an absent GitHub mirror first
+
+An owner may use the retained artifact locally without an Actions environment or
+npm trust connection. Set `GH_PACKAGES_TOKEN` through the approved credential flow
+to an existing classic PAT with `write:packages`, repository access and `read:org`
+(or `admin:org`). Do not print it. `FIRST_GITHUB_MIRROR=1` enables the local-only
+absence check; it is not an override for hidden or conflicting packages.
+
+```sh
+FIRST_GITHUB_MIRROR=1 node scripts/release.mjs publish release-artifact github
+```
+
+Before any write, the same package credential must prove active **admin**
+membership of `todoist`, authenticate to the package registry, receive an exact
+package REST 404 and registry package/version E404s, and pass both-registry
+integrity checks. Actions cannot use this path. A matching npm copy must still
+equal the original artifact. For a known mirror, the usual public visibility,
+repository linkage and readable registry metadata remain mandatory even when
+the flag is set.
+
+GitHub may initially create the new package as private. After creation, use the
+new package's settings to make it **Public**, then independently verify:
+
+```sh
+gh api orgs/todoist/packages/npm/remark-application-links \
+  --jq '{id,visibility,repository:.repository.full_name}'
+```
+
+The expected repository is `todoist/remark-application-links`. Do not proceed to
+npm bootstrap or declare completion until the new mirror is public and readable
+with the intended consumer credential. Preserve the old `@doist` package. If a
+write succeeded but subsequent verification failed, inspect the registry and
+reuse the exact original artifact; never rebuild version 1.0.5.
+
+### Bootstrap npm with the retained bytes
 
 First confirm `GH_PACKAGES_TOKEN` is a **classic PAT with read:packages** and the
 required organization SSO authorization, obtained through the approved credential

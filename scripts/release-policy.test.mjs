@@ -194,6 +194,9 @@ if (args[0] === 'config') {
     else console.log(JSON.stringify(copy.tags))
 } else if (args[0] === 'login') {
     // Fake login intentionally does not consume stdin; publish may need a fresh challenge.
+} else if (args[0] === 'whoami') {
+    if (state.whoamiError) fail(state.whoamiError)
+    else console.log(JSON.stringify('fixture-owner'))
 } else if (args[0] === 'publish') {
     if (state.requireOtp && fs.readFileSync(0, 'utf8') !== 'mock-otp\\n') throw new Error('Publish did not inherit interactive stdin')
     state.publishes.push(args)
@@ -213,6 +216,9 @@ const fs = require('node:fs')
 const state = JSON.parse(fs.readFileSync(process.env.MOCK_STATE))
 const path = process.argv[3]
 state.ghRequests.push(path)
+if (path.startsWith('orgs/') || path.startsWith('user/memberships/')) {
+    if (process.env.GH_TOKEN !== 'mock-only') throw new Error('Owner evidence did not use the package credential')
+}
 fs.writeFileSync(process.env.MOCK_STATE, JSON.stringify(state))
 let result
 if (path.endsWith('actions/runs/123')) result = {...${JSON.stringify(validRun)}, run_attempt: 2, conclusion: 'failure'}
@@ -226,7 +232,13 @@ else if (path.endsWith('actions/workflows/publish.yml')) result = {id: 2823705}
 else if (path.includes('compare/')) result = {status: 'ahead', merge_base_commit: {sha: '${selected}'}}
 else if (path.includes('contents/.github/workflows/publish.yml')) result = {type:'file',path:'.github/workflows/publish.yml',content:Buffer.from('historical workflow; current main may differ').toString('base64')}
 else if (path.includes('contents/package.json')) result = {content: Buffer.from(JSON.stringify({name:'@todoist/remark-application-links', version:'1.0.5'})).toString('base64')}
-else if (path === 'orgs/todoist/packages/npm/remark-application-links') result = {visibility: state.visibility || 'public', repository:{id:300606066}}
+else if (path === 'orgs/todoist/packages/npm/remark-application-links') {
+    if (state.mirrorStatus) {
+        result = {status:String(state.mirrorStatus), message:'Mock package lookup failed'}
+        process.exitCode = 1
+    } else result = {visibility: state.visibility || 'public', repository:{id:300606066}}
+}
+else if (path === 'user/memberships/orgs/todoist') result = {state:'active',role:'admin',organization:{login:'todoist'},...state.membership}
 else throw new Error('Unexpected fake GitHub request: ' + path)
 console.log(JSON.stringify(result))
 `,
@@ -262,6 +274,7 @@ console.log(JSON.stringify(result))
                         RELEASE_VERSION: '1.0.5',
                         RELEASE_TAG: tag,
                         GH_PACKAGES_TOKEN: 'mock-only',
+                        FIRST_GITHUB_MIRROR: '',
                         ...extraEnv,
                     },
                 },
@@ -468,6 +481,101 @@ test('C05 unexpected mirror visibility blocks every publication', () => {
         assert.notEqual(result.status, 0)
         assert.match(result.stderr, /mirror visibility/)
         assert.deepEqual(fixture.state().publishes, [])
+    } finally {
+        fixture.close()
+    }
+})
+
+for (const destination of ['npmjs', 'github']) {
+    test(`C08 local owner evidence permits first ${destination} write after both-registry preflight`, () => {
+        const fixture = publisherFixture({
+            mirrorStatus: 404,
+            tags: {},
+            missingPackage: true,
+            opposite: { missingPackage: true, tags: {} },
+        })
+        try {
+            const result = fixture.run(
+                'latest',
+                destination,
+                destination === 'npmjs' ? 'bootstrap-npm' : 'publish',
+                { FIRST_GITHUB_MIRROR: '1' },
+            )
+            assert.equal(result.status, 0, result.stderr)
+            const state = fixture.state()
+            assert.equal(state.publishes.length, 1)
+            assert.ok(state.ghRequests.includes('user/memberships/orgs/todoist'))
+            const writes = state.commands.findIndex(({ args }) =>
+                ['login', 'publish'].includes(args[0]),
+            )
+            for (const registry of ['npmjs', 'github'])
+                assert.ok(
+                    state.commands
+                        .slice(0, writes)
+                        .some(
+                            ({ args, destination: target }) =>
+                                target === registry && args[2] === 'dist.integrity',
+                        ),
+                )
+            assert.ok(
+                state.commands
+                    .filter(({ destination }) => destination === 'npmjs')
+                    .every(
+                        ({ hasGitHubCredential, hasGitHubAuthConfig }) =>
+                            !hasGitHubCredential && !hasGitHubAuthConfig,
+                    ),
+            )
+        } finally {
+            fixture.close()
+        }
+    })
+}
+
+for (const [label, options, env] of [
+    ['ordinary member', { membership: { role: 'member' } }, {}],
+    ['inactive owner', { membership: { state: 'pending' } }, {}],
+    ['wrong organization', { membership: { organization: { login: 'elsewhere' } } }, {}],
+    ['non-404 API failure', { mirrorStatus: 403 }, {}],
+    ['registry authentication failure', { whoamiError: 'E401' }, {}],
+    ['contradictory package metadata', { opposite: { missingPackage: false } }, {}],
+    [
+        'conflicting opposite version',
+        { opposite: { published: true, integrity: 'sha512-other' } },
+        {},
+    ],
+    ['Actions execution', {}, { GITHUB_ACTIONS: 'true' }],
+    ['no explicit first-mirror mode', {}, { FIRST_GITHUB_MIRROR: '' }],
+]) {
+    test(`C08 first mirror rejects ${label} before login or publication`, () => {
+        const fixture = publisherFixture({
+            mirrorStatus: 404,
+            tags: {},
+            missingPackage: true,
+            ...options,
+            opposite: { missingPackage: true, tags: {}, ...options.opposite },
+        })
+        try {
+            const result = fixture.run('latest', 'npmjs', 'bootstrap-npm', {
+                FIRST_GITHUB_MIRROR: '1',
+                ...env,
+            })
+            assert.notEqual(result.status, 0)
+            assert.deepEqual(fixture.state().publishes, [])
+            assert.ok(!fixture.state().commands.some(({ args }) => args[0] === 'login'))
+        } finally {
+            fixture.close()
+        }
+    })
+}
+
+test('C08 first-mirror mode cannot bypass unreadable known mirror metadata', () => {
+    const fixture = publisherFixture({ opposite: { packageErrorCode: 'E404' } })
+    try {
+        const result = fixture.run('latest', 'npmjs', 'bootstrap-npm', { FIRST_GITHUB_MIRROR: '1' })
+        assert.notEqual(result.status, 0)
+        assert.match(result.stderr, /Registry lookup failed.*E404/)
+        assert.deepEqual(fixture.state().publishes, [])
+        assert.ok(!fixture.state().commands.some(({ args }) => args[0] === 'login'))
     } finally {
         fixture.close()
     }
